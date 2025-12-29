@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>デジタル名札・座席札メーカー</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&family=Zen+Maru+Gothic:wght@500;700&family=Yuji+Syuku&display=swap" rel="stylesheet">
+    
+    <style>
+        /* フォントクラスの定義 */
+        .font-sans { font-family: 'Noto Sans JP', sans-serif; }
+        .font-rounded { font-family: 'Zen Maru Gothic', sans-serif; }
+        .font-serif { font-family: 'Yuji Syuku', serif; }
+
+        /* 印刷設定 */
+        @media print {
+            @page {
+                size: A4;
+                margin: 0;
+            }
+            body {
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+            }
+            .no-print {
+                display: none !important;
+            }
+            .print-area {
+                display: block !important;
+                width: 210mm !important;
+                height: 297mm !important;
+                box-shadow: none !important;
+                margin: 0 !important;
+                page-break-after: always;
+                overflow: hidden;
+            }
+            .print-wrapper {
+                padding: 0 !important;
+                background: white !important;
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen text-gray-800">
+
+    <div id="app" class="flex flex-col md:flex-row min-h-screen font-rounded">
+        <!-- サイドバーエリア -->
+        <div id="sidebar-container" class="w-full md:w-96 bg-white shadow-xl z-10 flex flex-col h-screen overflow-hidden no-print"></div>
+        
+        <!-- プレビューエリア -->
+        <div id="preview-container" class="flex-grow bg-gray-500 overflow-y-auto flex justify-center items-start print-wrapper"></div>
+
+        <!-- モーダルエリア -->
+        <div id="modal-container"></div>
+    </div>
+
+    <script>
+        // --- State Management ---
+        // Proxyによる自動レンダリングを廃止し、アクションごとに必要な部分だけを描画更新する方式に変更
+        const state = {
+            mode: 'badge', // 'badge' or 'desk'
+            names: [
+                { id: 1, name: '山田 太郎', kana: 'やまだ たろう' },
+                { id: 2, name: '佐藤 花子', kana: 'さとう はなこ' },
+                { id: 3, name: '鈴木 一郎', kana: 'すずき いちろう' },
+                { id: 4, name: '田中 美咲', kana: 'たなか みさき' },
+            ],
+            bulkText: '',
+            showBulkModal: false,
+            config: {
+                title: '1年 A組',
+                font: 'font-rounded',
+                color: 'bg-blue-500',
+                textColor: 'text-gray-800',
+                showFurigana: true,
+                showCutLines: true,
+                showTitle: true,
+            }
+        };
+
+        // --- Constants & Helpers ---
+        const colors = [
+            { name: '青', class: 'bg-blue-500', text: 'text-blue-600', border: 'border-blue-500' },
+            { name: '赤', class: 'bg-red-500', text: 'text-red-600', border: 'border-red-500' },
+            { name: '緑', class: 'bg-green-500', text: 'text-green-600', border: 'border-green-500' },
+            { name: '橙', class: 'bg-orange-500', text: 'text-orange-600', border: 'border-orange-500' },
+            { name: '紫', class: 'bg-purple-500', text: 'text-purple-600', border: 'border-purple-500' },
+            { name: '黒', class: 'bg-gray-800', text: 'text-gray-800', border: 'border-gray-800' },
+        ];
+
+        const fonts = [
+            { name: '丸ゴシック (学校推奨)', class: 'font-rounded' },
+            { name: 'ゴシック体 (標準)', class: 'font-sans' },
+            { name: '明朝体 (行事用)', class: 'font-serif' },
+        ];
+
+        const escapeHtml = (unsafe) => {
+            if (typeof unsafe !== 'string') return unsafe;
+            return unsafe
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        // --- Render Functions (分割レンダリング) ---
+
+        // 1. サイドバー（入力フォーム）の描画
+        function renderSidebar() {
+            const container = document.getElementById('sidebar-container');
+            // スクロール位置の保持
+            const scrollArea = document.getElementById('sidebar-scroll-area');
+            const savedScrollTop = scrollArea ? scrollArea.scrollTop : 0;
+
+            container.innerHTML = Sidebar();
+            
+            // アイコン再生成
+            lucide.createIcons();
+            
+            // スクロール位置の復元
+            const newScrollArea = document.getElementById('sidebar-scroll-area');
+            if (newScrollArea) newScrollArea.scrollTop = savedScrollTop;
+        }
+
+        // 2. プレビューの描画（頻繁に更新される）
+        function renderPreview() {
+            const container = document.getElementById('preview-container');
+            const app = document.getElementById('app');
+            
+            // フォント設定をルートコンテナに適用
+            app.className = `flex flex-col md:flex-row min-h-screen ${state.config.font}`;
+            
+            container.innerHTML = `
+                <div class="space-y-8 print-wrapper w-full flex flex-col items-center py-8">
+                    ${PreviewContent()}
+                </div>
+            `;
+        }
+
+        // 3. モーダルの描画
+        function renderModal() {
+            const container = document.getElementById('modal-container');
+            container.innerHTML = Modal();
+            lucide.createIcons();
+        }
+
+        // --- Actions ---
+
+        window.actions = {
+            setMode: (mode) => {
+                state.mode = mode;
+                renderSidebar(); // UIが変わるため再描画
+                renderPreview();
+            },
+            updateConfig: (key, value) => {
+                state.config[key] = value;
+                
+                // タイトル入力時はサイドバー（入力欄）を再描画しない（フォーカス外れ防止）
+                // それ以外（色変更など）はサイドバーも更新して選択状態を反映
+                if (key === 'title') {
+                    renderPreview();
+                } else {
+                    renderSidebar();
+                    renderPreview();
+                }
+            },
+            updateName: (id, field, value) => {
+                // データの更新
+                state.names = state.names.map(n => n.id === id ? { ...n, [field]: value } : n);
+                // 重要: テキスト入力中はプレビューのみ更新し、サイドバー（入力欄）は再描画しない！
+                // これによりIME入力が中断される問題を回避
+                renderPreview();
+            },
+            removeName: (id) => {
+                state.names = state.names.filter(n => n.id !== id);
+                renderSidebar(); // 行が減るので再描画必要
+                renderPreview();
+            },
+            addEmptyRow: () => {
+                state.names = [...state.names, { id: Date.now(), name: '', kana: '' }];
+                renderSidebar(); // 行が増えるので再描画必要
+                renderPreview();
+            },
+            setBulkText: (text) => {
+                state.bulkText = text;
+                // テキストエリアの中身はブラウザが保持するので再描画不要
+            },
+            toggleModal: (show) => {
+                state.showBulkModal = show;
+                renderModal();
+            },
+            handleBulkAdd: () => {
+                const lines = state.bulkText.split('\n');
+                const newEntries = lines.map(line => {
+                    const trimmed = line.trim();
+                    if (!trimmed) return null;
+                    let name = trimmed;
+                    let kana = '';
+                    if (trimmed.includes(',')) {
+                        [name, kana] = trimmed.split(',');
+                    } else if (trimmed.includes('、')) {
+                        [name, kana] = trimmed.split('、');
+                    }
+                    return { id: Date.now() + Math.random(), name: name.trim(), kana: kana ? kana.trim() : '' };
+                }).filter(Boolean);
+                
+                state.names = [...state.names, ...newEntries];
+                state.bulkText = '';
+                state.showBulkModal = false;
+                renderSidebar(); // リストが一気に変わるので再描画
+                renderPreview();
+                renderModal();
+            },
+            print: () => {
+                window.print();
+            }
+        };
+
+        // --- Components (Template Functions) ---
+
+        function BadgeCard(data, config, selectedColor) {
+            const borderClass = config.showCutLines ? 'border-dashed border-gray-300' : 'border-transparent';
+            return `
+            <div class="relative flex flex-col items-center justify-center h-full w-full p-4 border box-border ${borderClass}">
+                ${config.showCutLines ? `
+                    <div class="absolute top-0 left-0 w-4 h-4 border-t-2 border-l-2 border-gray-400"></div>
+                    <div class="absolute top-0 right-0 w-4 h-4 border-t-2 border-r-2 border-gray-400"></div>
+                    <div class="absolute bottom-0 left-0 w-4 h-4 border-b-2 border-l-2 border-gray-400"></div>
+                    <div class="absolute bottom-0 right-0 w-4 h-4 border-b-2 border-r-2 border-gray-400"></div>
+                ` : ''}
+                <div class="w-full h-full flex flex-col justify-center items-center border-4 rounded-xl ${selectedColor.border} bg-white relative overflow-hidden">
+                    ${config.showTitle && config.title ? `
+                        <div class="absolute top-0 left-0 w-full py-1 ${selectedColor.class} text-white text-center text-sm font-bold">
+                            ${escapeHtml(config.title)}
+                        </div>
+                    ` : ''}
+                    <div class="flex flex-col items-center justify-center flex-grow pt-4 w-full">
+                        ${config.showFurigana ? `<p class="text-xl mb-1 text-gray-600">${escapeHtml(data.kana)}</p>` : ''}
+                        <h2 class="text-4xl font-bold text-gray-900 whitespace-nowrap overflow-visible">
+                            ${escapeHtml(data.name)}
+                        </h2>
+                    </div>
+                </div>
+            </div>
+            `;
+        }
+
+        function DeskCard(data, config, selectedColor) {
+            const borderClass = config.showCutLines ? 'border-b border-dashed border-gray-300' : '';
+            return `
+            <div class="relative flex flex-col h-full w-full box-border ${borderClass}">
+                <div class="absolute top-1/2 left-0 w-full h-px bg-gray-300 border-t border-dashed"></div>
+                <div class="absolute top-1/2 right-2 transform -translate-y-1/2 text-gray-300 text-xs no-print">山折り</div>
+                <!-- Top Half (Inverted) -->
+                <div class="h-1/2 w-full flex flex-col justify-center items-center p-4 transform rotate-180 bg-white origin-center" style="border-bottom: 1px dashed #eee;">
+                    <div class="w-full h-full flex flex-col justify-center items-center border-b-8 ${selectedColor.border}">
+                        ${config.showFurigana ? `<p class="text-lg text-gray-600 mb-1">${escapeHtml(data.kana)}</p>` : ''}
+                        <h2 class="text-5xl font-bold text-gray-800">${escapeHtml(data.name)}</h2>
+                    </div>
+                </div>
+                <!-- Bottom Half (Upright) -->
+                <div class="h-1/2 w-full flex flex-col justify-center items-center p-4 bg-white">
+                    <div class="w-full h-full flex flex-col justify-center items-center">
+                        <div class="px-4 py-1 rounded-full ${selectedColor.class} text-white text-sm mb-2">
+                            ${escapeHtml(config.title || '座席札')}
+                        </div>
+                        <h2 class="text-3xl font-bold text-gray-800">${escapeHtml(data.name)}</h2>
+                        ${config.showFurigana ? `<p class="text-sm text-gray-500 mt-1">${escapeHtml(data.kana)}</p>` : ''}
+                    </div>
+                </div>
+            </div>
+            `;
+        }
+
+        function Sidebar() {
+            const { mode, config, names } = state;
+            const selectedColor = colors.find(c => c.class === config.color) || colors[0];
+
+            return `
+            <div class="p-6 bg-indigo-600 text-white flex-shrink-0">
+                <h1 class="text-xl font-bold flex items-center gap-2">
+                    <i data-lucide="users" class="w-6 h-6"></i>
+                    名札メーカー Pro
+                </h1>
+                <p class="text-indigo-200 text-sm mt-1">印刷して切るだけ。教室・イベントに。</p>
+            </div>
+
+            <div id="sidebar-scroll-area" class="p-6 flex-grow space-y-8 overflow-y-auto">
+                <!-- Mode Selection -->
+                <div class="space-y-3">
+                    <h3 class="text-sm font-bold text-gray-500 uppercase tracking-wider flex items-center gap-2">
+                        <i data-lucide="layout" class="w-4 h-4"></i> 作成モード
+                    </h3>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button onclick="actions.setMode('badge')" 
+                            class="p-3 rounded-lg border-2 flex flex-col items-center justify-center transition-all ${mode === 'badge' ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-gray-200 hover:bg-gray-50'}">
+                            <div class="w-8 h-10 border-2 border-current rounded mb-1 bg-white"></div>
+                            <span class="font-bold text-sm">首かけ名札</span>
+                            <span class="text-xs text-gray-400">A4に8枚</span>
+                        </button>
+                        <button onclick="actions.setMode('desk')"
+                            class="p-3 rounded-lg border-2 flex flex-col items-center justify-center transition-all ${mode === 'desk' ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-gray-200 hover:bg-gray-50'}">
+                            <div class="w-10 h-6 border-b-2 border-current mb-1 bg-white transform -skew-x-12"></div>
+                            <span class="font-bold text-sm">三角座席札</span>
+                            <span class="text-xs text-gray-400">A4に3枚</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Style Configuration -->
+                <div class="space-y-4">
+                    <h3 class="text-sm font-bold text-gray-500 uppercase tracking-wider flex items-center gap-2">
+                        <i data-lucide="settings" class="w-4 h-4"></i> デザイン設定
+                    </h3>
+                    
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">共通タイトル (クラス/役職)</label>
+                        <input type="text" value="${escapeHtml(config.title)}" 
+                            oninput="actions.updateConfig('title', this.value)"
+                            class="w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-indigo-500 outline-none"
+                            placeholder="例: 1年 A組, スタッフ">
+                    </div>
+
+                    <div class="flex items-center gap-2">
+                        <input type="checkbox" id="showKana" ${config.showFurigana ? 'checked' : ''} 
+                            onchange="actions.updateConfig('showFurigana', this.checked)"
+                            class="w-4 h-4 text-indigo-600 rounded">
+                        <label for="showKana" class="text-sm text-gray-700 cursor-pointer select-none">ふりがなを表示</label>
+                    </div>
+
+                    <div class="flex items-center gap-2">
+                        <input type="checkbox" id="showCut" ${config.showCutLines ? 'checked' : ''} 
+                            onchange="actions.updateConfig('showCutLines', this.checked)"
+                            class="w-4 h-4 text-indigo-600 rounded">
+                        <label for="showCut" class="text-sm text-gray-700 cursor-pointer select-none">切り取り線(ガイド)を表示</label>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-1">
+                            <i data-lucide="palette" class="w-3.5 h-3.5"></i> テーマカラー
+                        </label>
+                        <div class="flex gap-2 flex-wrap">
+                            ${colors.map(c => `
+                                <button onclick="actions.updateConfig('color', '${c.class}')"
+                                    class="w-8 h-8 rounded-full ${c.class} transition-transform ${config.color === c.class ? 'ring-2 ring-offset-2 ring-gray-400 scale-110' : 'hover:scale-110'}"
+                                    title="${c.name}">
+                                </button>
+                            `).join('')}
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-1">
+                            <i data-lucide="type" class="w-3.5 h-3.5"></i> フォント
+                        </label>
+                        <select onchange="actions.updateConfig('font', this.value)"
+                            class="w-full px-3 py-2 border rounded-md text-sm">
+                            ${fonts.map(f => `
+                                <option value="${f.class}" ${config.font === f.class ? 'selected' : ''}>${f.name}</option>
+                            `).join('')}
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Member List -->
+                <div class="space-y-3">
+                    <div class="flex justify-between items-end">
+                        <h3 class="text-sm font-bold text-gray-500 uppercase tracking-wider">名簿リスト (${names.length}名)</h3>
+                        <button onclick="actions.toggleModal(true)"
+                            class="text-xs text-indigo-600 font-semibold hover:underline flex items-center gap-1">
+                            <i data-lucide="file-text" class="w-3 h-3"></i> 一括追加(CSV)
+                        </button>
+                    </div>
+                    
+                    <div class="bg-gray-50 rounded-lg p-2 max-h-60 overflow-y-auto border border-gray-200 space-y-2">
+                        ${names.map((n, idx) => `
+                            <div class="bg-white p-2 rounded shadow-sm flex gap-2 items-center group">
+                                <div class="w-6 h-6 rounded-full bg-gray-200 flex items-center justify-center text-xs font-bold text-gray-500 flex-shrink-0">
+                                    ${idx + 1}
+                                </div>
+                                <div class="flex-grow">
+                                    <input type="text" value="${escapeHtml(n.name)}" 
+                                        oninput="actions.updateName(${n.id}, 'name', this.value)"
+                                        class="w-full text-sm font-bold border-b border-transparent focus:border-indigo-300 outline-none"
+                                        placeholder="名前">
+                                    <input type="text" value="${escapeHtml(n.kana)}" 
+                                        oninput="actions.updateName(${n.id}, 'kana', this.value)"
+                                        class="w-full text-xs text-gray-500 border-b border-transparent focus:border-indigo-300 outline-none"
+                                        placeholder="ふりがな">
+                                </div>
+                                <button onclick="actions.removeName(${n.id})"
+                                    class="text-gray-300 hover:text-red-500 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                                    <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                </button>
+                            </div>
+                        `).join('')}
+                        <button onclick="actions.addEmptyRow()"
+                            class="w-full py-2 border-2 border-dashed border-gray-300 rounded text-gray-400 hover:border-indigo-400 hover:text-indigo-500 text-sm font-bold flex items-center justify-center gap-1">
+                            <i data-lucide="plus" class="w-4 h-4"></i> 1行追加
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="pt-4 pb-12">
+                    <button onclick="actions.print()"
+                        class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all transform hover:-translate-y-1">
+                        <i data-lucide="printer" class="w-6 h-6"></i> 印刷する
+                    </button>
+                    <p class="text-center text-xs text-gray-400 mt-2">
+                        ※印刷時は「ヘッダーとフッター」のチェックを外してください
+                    </p>
+                </div>
+            </div>
+            `;
+        }
+
+        function PreviewContent() {
+            const { mode, names, config } = state;
+            const itemsPerPage = mode === 'badge' ? 8 : 3;
+            const totalPages = Math.ceil(names.length / itemsPerPage);
+            const selectedColor = colors.find(c => c.class === config.color) || colors[0];
+
+            let pagesHtml = '';
+            
+            for (let i = 0; i < totalPages; i++) {
+                const pageNames = names.slice(i * itemsPerPage, (i + 1) * itemsPerPage);
+                const gridStyle = mode === 'badge' 
+                    ? 'grid-template-columns: repeat(2, 1fr); grid-template-rows: repeat(4, 1fr); gap: 2mm;' 
+                    : 'grid-template-columns: 1fr; grid-template-rows: repeat(3, 1fr); gap: 10mm;';
+
+                const cardsHtml = pageNames.map(item => `
+                    <div class="w-full h-full overflow-hidden">
+                        ${mode === 'badge' ? BadgeCard(item, config, selectedColor) : DeskCard(item, config, selectedColor)}
+                    </div>
+                `).join('');
+
+                const emptySlots = itemsPerPage - pageNames.length;
+                const emptyHtml = Array.from({ length: emptySlots }).map(() => `
+                    <div class="opacity-10 border border-dashed border-gray-200"></div>
+                `).join('');
+
+                pagesHtml += `
+                    <div class="print-area bg-white shadow-2xl relative mx-auto"
+                        style="width: 210mm; height: 297mm; padding: 10mm; box-sizing: border-box;">
+                        <div class="w-full h-full grid" style="${gridStyle}">
+                            ${cardsHtml}
+                            ${emptyHtml}
+                        </div>
+                        <div class="absolute bottom-2 right-4 text-xs text-gray-300 no-print">
+                            Preview Page ${i + 1} / ${totalPages} (A4)
+                        </div>
+                    </div>
+                `;
+            }
+
+            if (names.length === 0) {
+                return `
+                    <div class="text-white text-center mt-20 no-print">
+                        <div class="flex justify-center mb-4 opacity-50"><i data-lucide="info" class="w-12 h-12"></i></div>
+                        <p class="text-xl font-bold opacity-80">リストに名前を追加してください</p>
+                        <p class="opacity-60">左側のパネルから追加できます</p>
+                    </div>
+                `;
+            }
+            return pagesHtml;
+        }
+
+        function Modal() {
+            if (!state.showBulkModal) return '';
+            return `
+            <div class="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center no-print">
+                <div class="bg-white rounded-lg p-6 w-full max-w-md shadow-2xl">
+                    <h3 class="text-lg font-bold mb-2 flex items-center gap-2">
+                        <i data-lucide="file-text" class="w-5 h-5"></i> 一括追加
+                    </h3>
+                    <p class="text-sm text-gray-500 mb-4">
+                        名前とふりがなをカンマ(,)区切りで入力してください。<br/>
+                        例: <br/>
+                        <code class="bg-gray-100 px-1 py-0.5 rounded">山田太郎, やまだたろう</code><br/>
+                        <code class="bg-gray-100 px-1 py-0.5 rounded">鈴木花子</code>
+                    </p>
+                    <textarea
+                        class="w-full h-40 border rounded p-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none font-mono"
+                        placeholder="山田 太郎, やまだ たろう&#13;&#10;鈴木 一郎, すずき いちろう"
+                        oninput="actions.setBulkText(this.value)"
+                    >${escapeHtml(state.bulkText)}</textarea>
+                    <div class="flex justify-end gap-3 mt-4">
+                        <button onclick="actions.toggleModal(false)"
+                            class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">
+                            キャンセル
+                        </button>
+                        <button onclick="actions.handleBulkAdd()"
+                            class="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700">
+                            リストに追加
+                        </button>
+                    </div>
+                </div>
+            </div>
+            `;
+        }
+
+        // --- Init ---
+        renderSidebar();
+        renderPreview();
+        renderModal();
+
+    </script>
+</body>
+</html>
